@@ -10,6 +10,8 @@
 #include <iterator>
 #include <span>
 
+inline constexpr std::ptrdiff_t dynamic_stride = -1;
+
 namespace utils {
 template <class Container>
 concept SliceableContainer =
@@ -82,8 +84,7 @@ class StrideIterator {
     return ptr_[n * stride_];
   }
 
-  std::strong_ordering operator<=>(const StrideIterator<T>& other) const =
-      default;
+  auto operator<=>(const StrideIterator<T>& other) const = default;
 
   reference operator*() const {
     return *ptr_;
@@ -107,8 +108,11 @@ StrideIterator<T> operator+(typename StrideIterator<T>::difference_type n,
   return it + n;
 }
 
-template <typename T>
+template <template <class, std::size_t, std::ptrdiff_t> class Slice, class T,
+          std::size_t extent, std::ptrdiff_t stride>
 class SliceInt {
+  using Derived = Slice<T, extent, stride>;
+
  public:
   using element_type = T;
   using value_type = std::remove_cv_t<T>;
@@ -123,15 +127,136 @@ class SliceInt {
   using reverse_iterator = std::reverse_iterator<iterator>;
 
  public:
-  [[nodiscard]] T* Data() const {
+  SliceInt() = default;
+
+  SliceInt(T* data) : data_(data) {
+  }
+
+  [[nodiscard]] constexpr iterator begin() const noexcept {
+    return iterator(Data(), Stride());
+  }
+
+  [[nodiscard]] constexpr iterator end() const noexcept {
+    return iterator(Data() + Size() * Stride(), Stride());
+  }
+
+  [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept {
+    return reverse_iterator(end());
+  }
+
+  [[nodiscard]] constexpr reverse_iterator rend() const noexcept {
+    return reverse_iterator(begin());
+  }
+
+  [[nodiscard]] constexpr reference Front() const {
+    return data_[0];
+  }
+
+  [[nodiscard]] reference Back() const {
+    return operator[](Size() - 1);
+  }
+
+  [[nodiscard]] reference operator[](size_type idx) const {
+    return Data()[idx * Stride()];
+  }
+
+  [[nodiscard]] constexpr pointer Data() const noexcept {
     return data_;
   }
 
-  [[nodiscard]] bool operator==(const SliceInt& other) const = default;
-
- protected:
-  explicit SliceInt(T* data) : data_(data) {
+  [[nodiscard]] size_type Size() const noexcept {
+    return static_cast<const Derived*>(this)->Size();
   }
+
+  [[nodiscard]] difference_type Stride() const noexcept {
+    return static_cast<const Derived*>(this)->Stride();
+  }
+
+  [[nodiscard]] constexpr bool IsEmpty() const noexcept {
+    return Size() == 0;
+  }
+
+  Slice<T, std::dynamic_extent, dynamic_stride> Skip(
+      std::ptrdiff_t skip) const {
+    return Slice<T, std::dynamic_extent, dynamic_stride>(
+        Data(), (Size() + skip - 1) / skip, skip * Stride());
+  }
+
+  template <std::ptrdiff_t skip>
+    requires(extent == std::dynamic_extent && stride == dynamic_stride)
+  Slice<T, std::dynamic_extent, dynamic_stride> Skip() const {
+    return Slice<T, std::dynamic_extent, dynamic_stride>(
+        Data(), (Size() + skip - 1) / skip, skip * Stride());
+  }
+
+  template <std::ptrdiff_t skip>
+    requires(extent == std::dynamic_extent && stride != dynamic_stride)
+  Slice<T, std::dynamic_extent, skip * stride> Skip() const {
+    return Slice<T, std::dynamic_extent, skip * stride>(
+        Data(), (Size() + skip - 1) / skip);
+  }
+
+  template <std::ptrdiff_t skip>
+    requires(extent != std::dynamic_extent && stride != dynamic_stride)
+  Slice<T, (extent + skip - 1) / skip, skip * stride> Skip() const {
+    return Slice<T, (extent + skip - 1) / skip, skip * stride>(Data());
+  }
+
+  Slice<T, std::dynamic_extent, stride> First(std::size_t count) const {
+    return Slice<T, std::dynamic_extent, stride>(Data(), count);
+  }
+
+  template <std::size_t count>
+  Slice<T, count, stride> First() const {
+    return Slice<T, count, stride>(Data());
+  }
+
+  Slice<T, std::dynamic_extent, stride> Last(std::size_t count) const {
+    return Slice<T, std::dynamic_extent, stride>(
+        Data() + Size() - Stride() * count, count);
+  }
+
+  template <std::size_t count>
+  Slice<T, count, stride> Last() const {
+    return Slice<T, count, stride>(Data() + Size() - Stride() * count);
+  }
+
+  Slice<T, std::dynamic_extent, stride> DropFirst(std::size_t count) const {
+    return Slice<T, std::dynamic_extent, stride>(Data() + count * Stride(),
+                                                 Size() - count);
+  }
+
+  template <std::size_t count>
+    requires(extent == std::dynamic_extent)
+  Slice<T, std::dynamic_extent, stride> DropFirst() const {
+    return Slice<T, std::dynamic_extent, stride>(Data() + count * Stride(),
+                                                 Size() - count);
+  }
+
+  template <std::size_t count>
+    requires(extent != std::dynamic_extent)
+  Slice<T, extent - count, stride> DropFirst() const {
+    return Slice<T, extent - count, stride>(Data() + count * Stride());
+  }
+
+  Slice<T, std::dynamic_extent, stride> DropLast(std::size_t count) const {
+    return Slice<T, std::dynamic_extent, stride>(Data(), Size() - count);
+  }
+
+  template <std::size_t count>
+    requires(extent == std::dynamic_extent)
+  Slice<T, std::dynamic_extent, stride> DropLast() const {
+    return Slice<T, std::dynamic_extent, stride>(Data(), Size() - count);
+  }
+
+  template <std::size_t count>
+    requires(extent != std::dynamic_extent)
+  Slice<T, extent - count, stride> DropLast() const {
+    return Slice<T, extent - count, stride>(Data());
+  }
+
+  [[nodiscard]] constexpr bool operator==(
+      const SliceInt& other) const noexcept = default;
 
  protected:
   T* data_;
@@ -139,18 +264,15 @@ class SliceInt {
 
 };  // namespace utils
 
-inline constexpr std::ptrdiff_t dynamic_stride = -1;
-
 template <class T, std::size_t extent = std::dynamic_extent,
           std::ptrdiff_t stride = 1>
-class Slice : public utils::SliceInt<T> {
-  using Base = utils::SliceInt<T>;
+class Slice : public utils::SliceInt<Slice, T, extent, stride> {
+  using Base = utils::SliceInt<Slice, T, extent, stride>;
 
  public:
-  Slice() : Base(nullptr) {
-  }
+  Slice() = default;
 
-  explicit Slice(T* data) : Base(data) {
+  Slice(T* data) : Base(data) {
   }
 
   template <utils::SliceableContainer Container>
@@ -161,51 +283,6 @@ class Slice : public utils::SliceInt<T> {
   Slice(const Slice<U, extent, stride>& other) : Base(other.Data()) {
   }
 
-  // Data, Size, Stride, begin, end, casts, etc...
-
-  // Slice<T, std::dynamic_extent, stride> DropFirst(std::size_t count) const;
-
-  // template <std::size_t count>
-  // Slice<T, /*?*/, stride> DropFirst() const;
-
-  // Slice<T, std::dynamic_extent, stride> DropLast(std::size_t count) const;
-
-  // template <std::size_t count>
-  // Slice<T, /*?*/, stride> DropLast() const;
-
-  Slice<T, std::dynamic_extent, dynamic_stride> Skip(
-      std::ptrdiff_t skip) const {
-    return Slice<T, std::dynamic_extent, dynamic_stride>(
-        Base::Data(), (extent + skip - 1) / skip, skip * stride);
-  }
-
-  template <std::ptrdiff_t skip>
-  Slice<T, (extent + skip - 1) / skip, skip * stride> Skip() const {
-    return Slice<T, (extent + skip - 1) / skip, skip * stride>(Base::Data());
-  }
-
-  [[nodiscard]] bool operator==(const Slice& other) const = default;
-
-  constexpr typename Base::reference operator[](std::size_t idx) const {
-    return Base::Data()[idx * stride];
-  }
-
-  [[nodiscard]] typename Base::iterator begin() {
-    return typename Base::iterator(Base::Data(), stride);
-  }
-
-  [[nodiscard]] typename Base::iterator end() {
-    return typename Base::iterator(Base::Data() + extent * stride, stride);
-  }
-
-  [[nodiscard]] typename Base::reverse_iterator rbegin() {
-    return Base::reverse_iterator(end());
-  }
-
-  [[nodiscard]] typename Base::reverse_iterator rend() {
-    return Base::reverse_iterator(begin());
-  }
-
   [[nodiscard]] constexpr std::size_t Size() const {
     return extent;
   }
@@ -213,16 +290,18 @@ class Slice : public utils::SliceInt<T> {
   [[nodiscard]] constexpr std::ptrdiff_t Stride() const {
     return stride;
   }
+
+  [[nodiscard]] constexpr bool operator==(const Slice& other) const noexcept =
+      default;
 };
 
 template <class T>
 class Slice<T, std::dynamic_extent, dynamic_stride>
-    : public utils::SliceInt<T> {
-  using Base = utils::SliceInt<T>;
+    : public utils::SliceInt<Slice, T, std::dynamic_extent, dynamic_stride> {
+  using Base = utils::SliceInt<Slice, T, std::dynamic_extent, dynamic_stride>;
 
  public:
-  Slice() : Base(nullptr), extent_(0), stride_(0) {
-  }
+  Slice() = default;
 
   explicit Slice(T* data, std::size_t extent, std::ptrdiff_t stride)
       : Base(data), extent_(extent), stride_(stride) {
@@ -240,40 +319,15 @@ class Slice<T, std::dynamic_extent, dynamic_stride>
       : Base(other.Data()), extent_(extent), stride_(stride) {
   }
 
-  template <std::ptrdiff_t skip>
-  Slice Skip() const {
-    return Slice(Base::Data(), (extent_ + skip - 1) / skip, skip * stride_);
-  }
-
-  [[nodiscard]] bool operator==(const Slice& other) const = default;
-
-  typename Base::reference operator[](std::size_t idx) const {
-    return Base::Data()[idx * stride_];
-  }
-
-  [[nodiscard]] typename Base::iterator begin() {
-    return typename Base::iterator(Base::Data(), stride_);
-  }
-
-  [[nodiscard]] typename Base::iterator end() {
-    return typename Base::iterator(Base::Data() + extent_ * stride_, stride_);
-  }
-
-  [[nodiscard]] typename Base::reverse_iterator rbegin() {
-    return Base::reverse_iterator(end());
-  }
-
-  [[nodiscard]] typename Base::reverse_iterator rend() {
-    return Base::reverse_iterator(begin());
-  }
-
-  [[nodiscard]] std::size_t Size() const {
+  [[nodiscard]] std::size_t Size() const noexcept {
     return extent_;
   }
 
-  [[nodiscard]] std::ptrdiff_t Stride() const {
+  [[nodiscard]] std::ptrdiff_t Stride() const noexcept {
     return stride_;
   }
+
+  [[nodiscard]] bool operator==(const Slice& other) const noexcept = default;
 
  private:
   std::size_t extent_;
@@ -281,8 +335,9 @@ class Slice<T, std::dynamic_extent, dynamic_stride>
 };
 
 template <class T, std::ptrdiff_t stride>
-class Slice<T, std::dynamic_extent, stride> : public utils::SliceInt<T> {
-  using Base = utils::SliceInt<T>;
+class Slice<T, std::dynamic_extent, stride>
+    : public utils::SliceInt<Slice, T, std::dynamic_extent, stride> {
+  using Base = utils::SliceInt<Slice, T, std::dynamic_extent, stride>;
 
  public:
   Slice() : Base(nullptr), extent_(0) {
@@ -300,97 +355,30 @@ class Slice<T, std::dynamic_extent, stride> : public utils::SliceInt<T> {
       : Base(other.Data()), extent_(extent) {
   }
 
-  Slice<T, std::dynamic_extent, dynamic_stride> Skip(
-      std::ptrdiff_t skip) const {
-    return Slice<T, std::dynamic_extent, dynamic_stride>(
-        Base::Data(), (extent_ + skip - 1) / skip, skip * stride);
-  }
-
-  template <std::ptrdiff_t skip>
-  Slice<T, std::dynamic_extent, skip * stride> Skip() const {
-    return Slice<T, std::dynamic_extent, skip * stride>(
-        Base::Data(), (extent_ + skip - 1) / skip);
-  }
-
-  Slice First(std::size_t count) const {
-    return Slice(Base::Data(), count);
-  }
-
-  template <std::size_t count>
-  Slice<T, count, stride> First() const {
-    return Slice<T, count, stride>(Base::Data());
-  }
-
-  Slice Last(std::size_t count) const {
-    return Slice(Base::Data() + extent_ - stride * count, count);
-  }
-
-  template <std::size_t count>
-  Slice<T, count, stride> Last() const {
-    return Slice<T, count, stride>(Base::Data() + extent_ - stride * count);
-  }
-
-  Slice DropFirst(std::size_t count) const {
-    return Slice(Base::Data() + count * stride, extent_ - count);
-  }
-
-  template <std::size_t count>
-  Slice DropFirst() const {
-    return Slice(Base::Data() + count * stride, extent_ - count);
-  }
-
-  Slice DropLast(std::size_t count) const {
-    return Slice(Base::Data(), extent_ - count);
-  }
-
-  template <std::size_t count>
-  Slice DropLast() const {
-    return Slice(Base::Data(), extent_ - count);
-  }
-
-  [[nodiscard]] bool operator==(const Slice& other) const = default;
-
-  constexpr typename Base::reference operator[](std::size_t idx) const {
-    return Base::Data()[idx * stride];
-  }
-
-  [[nodiscard]] typename Base::iterator begin() {
-    return typename Base::iterator(Base::Data(), stride);
-  }
-
-  [[nodiscard]] typename Base::iterator end() {
-    return typename Base::iterator(Base::Data() + extent_ * stride, stride);
-  }
-
-  [[nodiscard]] typename Base::reverse_iterator rbegin() {
-    return Base::reverse_iterator(end());
-  }
-
-  [[nodiscard]] typename Base::reverse_iterator rend() {
-    return Base::reverse_iterator(begin());
-  }
-
-  [[nodiscard]] std::size_t Size() const {
+  [[nodiscard]] std::size_t Size() const noexcept {
     return extent_;
   }
 
-  [[nodiscard]] constexpr std::ptrdiff_t Stride() const {
+  [[nodiscard]] constexpr std::ptrdiff_t Stride() const noexcept {
     return stride;
   }
 
+  [[nodiscard]] bool operator==(const Slice& other) const = default;
+  
  private:
   std::size_t extent_;
 };
 
 template <class T, std::size_t extent>
-class Slice<T, extent, dynamic_stride> : public utils::SliceInt<T> {
-  using Base = utils::SliceInt<T>;
+class Slice<T, extent, dynamic_stride>
+    : public utils::SliceInt<Slice, T, extent, dynamic_stride> {
+  using Base = utils::SliceInt<Slice, T, extent, dynamic_stride>;
 
  public:
   Slice() : Base(nullptr), stride_(0) {
   }
 
-  template <std::convertible_to<T> U>  // TODO: same_size ?
+  template <std::convertible_to<T> U>
   explicit Slice(U* data, std::ptrdiff_t stride) : Base(data), stride_(stride) {
   }
 
@@ -399,19 +387,15 @@ class Slice<T, extent, dynamic_stride> : public utils::SliceInt<T> {
       : Base(other.Data()), stride_(stride) {
   }
 
-  [[nodiscard]] constexpr std::size_t Size() const {
+  [[nodiscard]] constexpr std::size_t Size() const noexcept {
     return extent;
   }
 
-  [[nodiscard]] std::ptrdiff_t Stride() const {
+  [[nodiscard]] std::ptrdiff_t Stride() const noexcept {
     return stride_;
   }
 
   [[nodiscard]] bool operator==(const Slice& other) const = default;
-
-  typename Base::reference operator[](std::size_t idx) const {
-    return Base::Data()[idx * stride_];
-  }
 
  private:
   std::ptrdiff_t stride_;
