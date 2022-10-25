@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iostream>
 #include <optional>
 
 template <class From, auto target>
@@ -16,7 +17,19 @@ class PolymorphicMapper {
   template <class C, class Map, class... Maps>
   static std::optional<Target> getTarget(const Base& object) {
     if (dynamic_cast<const typename Map::Type*>(&object) != nullptr) {
-      return Map::Target;
+      if constexpr (std::derived_from<typename Map::Type, typename C::Type>) {
+        auto target = getTarget<Map, Maps...>(object);
+        if (target) {
+          return target;
+        }
+      } else {
+        auto target = getTarget<C, Maps...>(object);
+        if (target) {
+          return target;
+        }
+      }
+      
+      return C::Target;
     } else {
       return getTarget<C, Maps...>(object);
     }
