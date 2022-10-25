@@ -9,11 +9,12 @@ struct Mapping {
 };
 
 template <class Base, class Target, class... Mappings>
+  requires((std::derived_from<typename Mappings::Type, Base> &&
+            std::same_as<decltype(Mappings::Target), const Target>) &&
+           ...)
 class PolymorphicMapper {
   template <class C, class Map, class... Maps>
-  static std::optional<Target> getTarget(const Base& object)
-    requires std::derived_from<typename Map::Type, Base>
-  {
+  static std::optional<Target> getTarget(const Base& object) {
     if (dynamic_cast<const typename Map::Type*>(&object) != nullptr) {
       return Map::Target;
     } else {
@@ -21,7 +22,7 @@ class PolymorphicMapper {
     }
   }
 
-  template<class C>
+  template <class C>
   static std::optional<Target> getTarget(const Base& object) {
     if (dynamic_cast<const typename C::Type*>(&object) != nullptr) {
       return C::Target;
