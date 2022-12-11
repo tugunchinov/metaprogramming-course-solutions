@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <type_traits>
 #include <cstdint>
 #include <string_view>
