@@ -23,13 +23,7 @@ concept TypeList = Empty<TL> || TypeSequence<TL>;
 template <class T, TypeList TL>
 struct Cons {
   using Head = T;
-  using Tail = Cons<typename TL::Head, typename TL::Tail>;
-};
-
-template <class T, Empty E>
-struct Cons<T, E> {
-  using Head = T;
-  using Tail = E;
+  using Tail = TL;
 };
 
 namespace detail {
@@ -47,55 +41,43 @@ struct ToTuple<E, Ts...> {
 };
 
 template <TypeTuple>
-struct FromTuple {
-  using List = Nil;
-};
+struct FromTuple : public Nil {};
 
 template <class T, class... Ts>
 struct FromTuple<TTuple<T, Ts...>> {
-  using List = Cons<T, typename FromTuple<TTuple<Ts...>>::List>;
+  using Head = T;
+  using Tail = FromTuple<TTuple<Ts...>>;
 };
 
 template <std::size_t N, TypeList TL>
 struct Take {
-  using List =
-      Cons<typename TL::Head, typename Take<N - 1, typename TL::Tail>::List>;
+  using Head = typename TL::Head;
+  using Tail = Take<N - 1, typename TL::Tail>;
 };
 
 template <std::size_t N, Empty E>
-struct Take<N, E> {
-  using List = Nil;
-};
+struct Take<N, E> : public Nil {};
 
 template <TypeList TL>
-struct Take<0, TL> {
-  using List = Nil;
-};
+struct Take<0, TL> : public Nil {};
 
 template <std::size_t N, TypeList TL>
-struct Drop {
-  using List = typename Drop<N - 1, typename TL::Tail>::List;
-};
+struct Drop : public Drop<N - 1, typename TL::Tail> {};
 
 template <TypeList TL>
-struct Drop<0, TL> {
-  using List = TL;
-};
+struct Drop<0, TL> : public TL {};
 
 template <std::size_t N, Empty E>
-struct Drop<N, E> {
-  using List = Nil;
-};
+struct Drop<N, E> : public Nil {};
 
 template <std::size_t N, class T>
 struct Replicate {
-  using List = Cons<T, typename Replicate<N - 1, T>::List>;
+  using Head = T;
+  using Tail = Replicate<N - 1, T>;
 };
 
 template <class T>
-struct Replicate<0, T> {
-  using List = Nil;
-};
+struct Replicate<0, T> : public Nil {};
 
 template <template <class> class F, class T>
 struct Iterate {
@@ -125,54 +107,25 @@ template <template <class> class F, Empty E>
 struct Map<F, E> : Nil {};
 
 template <template <class> class P, class T, TypeList TL, bool pick>
-struct Pick {
+struct Filter {
   using Head = T;
-  using Tail = Pick<P, typename TL::Head, typename TL::Tail,
-                    P<typename TL::Head>::Value>;
+  using Tail = Filter<P, typename TL::Head, typename TL::Tail,
+                      P<typename TL::Head>::Value>;
 };
 
 template <template <class> class P, class T, TypeList TL>
-struct Pick<P, T, TL, false> {
-  using Next = Pick<P, typename TL::Head, typename TL::Tail,
-                    P<typename TL::Head>::Value>;
-  using Head = typename Next::Head;
-  using Tail = typename Next::Tail;
-};
+struct Filter<P, T, TL, false>
+    : public Filter<P, typename TL::Head, typename TL::Tail,
+                    P<typename TL::Head>::Value> {};
 
 template <template <class> class P, class T, Empty E>
-struct Pick<P, T, E, true> {
+struct Filter<P, T, E, true> {
   using Head = T;
   using Tail = Nil;
 };
 
 template <template <class> class P, class T, Empty E>
-struct Pick<P, T, E, false> {
-  using Head = Nil;
-  using Tail = Nil;
-};
-
-template <template <class> class P, TypeList TL>
-struct Filter {
-  using Next = Pick<P, typename TL::Head, typename TL::Tail,
-                    P<typename TL::Head>::Value>;
-  using Head = typename Next::Head;
-  using Tail = typename Next::Tail;
-};
-
-template <template <class> class P, Empty E>
-struct Filter<P, E> {
-  using Head = Nil;
-  using Tail = Nil;
-};
-
-template <class T, TypeList TL>
-struct MapNil {
-  using Head = T;
-  using Tail = TL;
-};
-
-template <TypeList TL>
-struct MapNil<Nil, TL> : Nil {};
+struct Filter<P, T, E, false> : public Nil {};
 
 template <template <class, class> class OP, class T, TypeList TL>
 struct Scanl {
@@ -196,7 +149,7 @@ struct Foldl<OP, T, E> {
 
 template <std::size_t N, TypeList TL, TypeList LT>
 struct Inits {
-  using Head = typename Take<N, TL>::List;
+  using Head = Take<N, TL>;
   using Tail = Inits<N + 1, TL, typename LT::Tail>;
 };
 
@@ -233,14 +186,17 @@ struct Zip2<L, E> : Nil {};
 template <Empty EL, Empty ER>
 struct Zip2<EL, ER> : Nil {};
 
-template <TypeList... TL>
-struct Zip {
-  using Head = TTuple<typename TL::Head...>;
-  using Tail = Zip<typename TL::Tail...>;
+template <class... TL>
+struct Zip : public Nil {
 };
 
-template <template <class, class> class Eq, class C, TypeList TL,
-          bool take>
+template <TypeSequence... TS>
+struct Zip<TS...> {
+  using Head = TTuple<typename TS::Head...>;
+  using Tail = Zip<typename TS::Tail...>;
+};
+
+template <template <class, class> class Eq, class C, TypeList TL, bool take>
 struct MakeGroup {
   using Next = MakeGroup<Eq, typename TL::Head, typename TL::Tail,
                          Eq<C, typename TL::Head>::Value>;
@@ -249,8 +205,7 @@ struct MakeGroup {
   using Tail = typename Next::Tail;
 };
 
-template <template <class, class> class Eq, class C,
-          TypeList TL>
+template <template <class, class> class Eq, class C, TypeList TL>
 struct MakeGroup<Eq, C, TL, false> {
   using Result = Nil;
   using Head = C;
@@ -309,16 +264,16 @@ template <TypeList TL>
 using ToTuple = typename detail::ToTuple<TL>::Tuple;
 
 template <type_tuples::TypeTuple TT>
-using FromTuple = typename detail::FromTuple<TT>::List;
+using FromTuple = detail::FromTuple<TT>;
 
 template <std::size_t N, TypeList TL>
-using Take = typename detail::Take<N, TL>::List;
+using Take = detail::Take<N, TL>;
 
 template <std::size_t N, TypeList TL>
-using Drop = typename detail::Drop<N, TL>::List;
+using Drop = detail::Drop<N, TL>;
 
 template <std::size_t N, class T>
-using Replicate = typename detail::Replicate<N, T>::List;
+using Replicate = detail::Replicate<N, T>;
 
 template <template <class> class F, class T>
 using Iterate = detail::Iterate<F, T>;
@@ -330,11 +285,16 @@ template <template <class> class F, TypeList TL>
 using Map = detail::Map<F, TL>;
 
 template <template <class> class P, TypeList TL>
-using Filtered = typename detail::Filter<P, TL>;
+struct Filter {
+  using Filtered =
+      typename detail::Filter<P, typename TL::Head, typename TL::Tail,
+                              P<typename TL::Head>::Value>;
+  using Head = typename Filtered::Head;
+  using Tail = typename Filtered::Tail;
+};
 
-template <template <class> class P, TypeList TL>
-using Filter = typename detail::MapNil<typename Filtered<P, TL>::Head,
-                                       typename Filtered<P, TL>::Tail>;
+template <template <class> class P, Empty E>
+struct Filter<P, E> : public Nil {};
 
 template <template <class, class> class OP, class T, TypeList TL>
 using Scanl = Cons<T, detail::Scanl<OP, T, TL>>;
