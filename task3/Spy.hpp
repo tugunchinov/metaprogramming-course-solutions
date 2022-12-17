@@ -3,6 +3,7 @@
 #include <concepts>
 #include <cstring>
 #include <functional>
+#include <utility>
 
 namespace detail {
 
@@ -31,7 +32,7 @@ static constexpr std::size_t kSmallBufferSize = 64;
 
 template <class Allocator>
 class LoggerWrapper {
-  using LogPtr = VoidCallable<unsigned>*;
+  using LogPtr = void (LoggerWrapper::*)(unsigned);
   using DestroyPtr = void (LoggerWrapper::*)();
   using CopyPtr = void (LoggerWrapper::*)(const LoggerWrapper&);
   using MovePtr = void (LoggerWrapper::*)(LoggerWrapper&);
@@ -43,15 +44,15 @@ class LoggerWrapper {
       (this->*destroy_ptr_)();
     }
 
-    destroy_ptr_ = &LoggerWrapper::destroyLogger<Functor<Logger, unsigned>>;
+    destroy_ptr_ = &LoggerWrapper::destroyLogger<Logger>;
 
     if constexpr (std::copyable<Logger>) {
-      copy_ptr_ = &LoggerWrapper::copyLogger<Functor<Logger, unsigned>>;
+      copy_ptr_ = &LoggerWrapper::copyLogger<Logger>;
     }
 
-    move_ptr_ = &LoggerWrapper::moveLogger<Functor<Logger, unsigned>>;
+    move_ptr_ = &LoggerWrapper::moveLogger<Logger>;
 
-    constructLogger(Functor<Logger, unsigned>(std::forward<Logger>(logger)));
+    createLogger(std::forward<Logger>(logger));
   }
 
   void wrapLogger() {
@@ -77,19 +78,19 @@ class LoggerWrapper {
 
   LoggerWrapper(LoggerWrapper&& other)
       : alloc_(std::move(other.alloc_)),
-        destroy_ptr_(other.destroy_ptr_),
-        copy_ptr_(other.copy_ptr_),
-        move_ptr_(other.move_ptr_) {
+        destroy_ptr_(std::exchange(other.destroy_ptr_, nullptr)),
+        copy_ptr_(std::exchange(other.copy_ptr_, nullptr)),
+        move_ptr_(std::exchange(other.move_ptr_, nullptr)) {
     if (move_ptr_ != nullptr) {
       (this->*move_ptr_)(other);
     }
-
-    other.destroy_ptr_ = nullptr;
-    other.copy_ptr_ = nullptr;
-    other.move_ptr_ = nullptr;
   }
 
   LoggerWrapper& operator=(const LoggerWrapper& other) {
+    if (this == &other) {
+      return *this;
+    }
+
     if (destroy_ptr_ != nullptr) {
       (this->*destroy_ptr_)();
     }
@@ -111,17 +112,17 @@ class LoggerWrapper {
   }
 
   LoggerWrapper& operator=(LoggerWrapper&& other) {
+    if (this == &other) {
+      return *this;
+    }
+
     if (destroy_ptr_ != nullptr) {
       (this->*destroy_ptr_)();
     }
 
-    destroy_ptr_ = other.destroy_ptr_;
-    copy_ptr_ = other.copy_ptr_;
-    move_ptr_ = other.move_ptr_;
-
-    other.destroy_ptr_ = nullptr;
-    other.copy_ptr_ = nullptr;
-    other.move_ptr_ = nullptr;
+    destroy_ptr_ = std::exchange(other.destroy_ptr_, nullptr);
+    copy_ptr_ = std::exchange(other.copy_ptr_, nullptr);
+    move_ptr_ = std::exchange(other.move_ptr_, nullptr);
 
     if (move_ptr_ != nullptr) {
       (this->*move_ptr_)(other);
@@ -138,19 +139,32 @@ class LoggerWrapper {
 
   void operator()(unsigned v) {
     if (call_ptr_ != nullptr) {
-      (*call_ptr_)(v);
+      (this->*call_ptr_)(v);
     }
   }
 
  private:
   template <std::invocable<unsigned> Logger>
+  void callLogger(unsigned v) {
+    if constexpr (sizeof(Logger) > kSmallBufferSize) {
+      std::invoke(
+          *reinterpret_cast<std::remove_reference_t<Logger>*>(logger_.head_),
+          v);
+    } else {
+      std::invoke(
+          *reinterpret_cast<std::remove_reference_t<Logger>*>(logger_.stack_),
+          v);
+    }
+  }
+
+  template <std::invocable<unsigned> Logger>
   void copyLogger(const LoggerWrapper& other) {
     if constexpr (sizeof(Logger) > kSmallBufferSize) {
       Logger copy = *reinterpret_cast<const Logger*>(other.logger_.head_);
-      constructLogger<Logger>(std::move(copy));
+      createLogger<Logger>(std::move(copy));
     } else {
       Logger copy = *reinterpret_cast<const Logger*>(other.logger_.stack_);
-      constructLogger<Logger>(std::move(copy));
+      createLogger<Logger>(std::move(copy));
     }
   }
 
@@ -162,30 +176,31 @@ class LoggerWrapper {
 
       if constexpr (sizeof(Logger) > kSmallBufferSize) {
         logger_.head_ = other.logger_.head_;
-        call_ptr_ = reinterpret_cast<LogPtr>(logger_.head_);
+        call_ptr_ = &LoggerWrapper::callLogger<Logger>;
       } else {
-        constructLogger(
-            std::move(*reinterpret_cast<Logger*>(other.logger_.stack_)));
+        createLogger(
+            std::move(*reinterpret_cast<std::remove_reference_t<Logger>*>(
+                other.logger_.stack_)));
       }
     } else {
       if (alloc_ == other.alloc_) {
         if constexpr (sizeof(Logger) > kSmallBufferSize) {
           logger_.head_ = other.logger_.head_;
-          call_ptr_ = reinterpret_cast<LogPtr>(logger_.head_);
+          call_ptr_ = &LoggerWrapper::callLogger<Logger>;
         } else {
-          constructLogger(
+          createLogger(
               std::move(*reinterpret_cast<Logger*>(other.logger_.stack_)));
         }
       } else {
         alloc_ = std::move(other.alloc_);
 
         if constexpr (sizeof(Logger) > kSmallBufferSize) {
-          constructLogger(
+          createLogger(
               std::move(*reinterpret_cast<Logger*>(other.logger_.head_)));
           std::allocator_traits<Allocator>::deallocate(
               alloc_, other.logger_.head_, sizeof(Logger));
         } else {
-          constructLogger(
+          createLogger(
               std::move(*reinterpret_cast<Logger*>(other.logger_.stack_)));
         }
       }
@@ -195,7 +210,7 @@ class LoggerWrapper {
   }
 
   template <std::invocable<unsigned> Logger>
-  void constructLogger(Logger&& logger) {
+  void createLogger(Logger&& logger) {
     logger_.head_ =
         std::allocator_traits<Allocator>::allocate(alloc_, sizeof(Logger));
     std::allocator_traits<Allocator>::construct(
@@ -203,25 +218,26 @@ class LoggerWrapper {
         reinterpret_cast<std::remove_reference_t<Logger>*>(logger_.head_),
         std::forward<Logger>(logger));
 
-    call_ptr_ = reinterpret_cast<LogPtr>(logger_.head_);
+    call_ptr_ = &LoggerWrapper::callLogger<std::remove_reference_t<Logger>>;
   }
 
   template <std::invocable<unsigned> Logger>
     requires(sizeof(Logger) <= kSmallBufferSize)
-  void constructLogger(Logger&& logger) {
+  void createLogger(Logger&& logger) {
     std::allocator_traits<Allocator>::construct(
         alloc_,
         reinterpret_cast<std::remove_reference_t<Logger>*>(logger_.stack_),
         std::forward<Logger>(logger));
 
-    call_ptr_ = reinterpret_cast<LogPtr>(logger_.stack_);
+    call_ptr_ = &LoggerWrapper::callLogger<Logger>;
   }
 
   template <std::invocable<unsigned> Logger>
   void destroyLogger() {
     if (logger_.head_ != nullptr) {
       std::allocator_traits<Allocator>::destroy(
-          alloc_, reinterpret_cast<Logger*>(logger_.head_));
+          alloc_,
+          reinterpret_cast<std::remove_reference_t<Logger>*>(logger_.head_));
       std::allocator_traits<Allocator>::deallocate(alloc_, logger_.head_,
                                                    sizeof(Logger));
     }
@@ -232,9 +248,10 @@ class LoggerWrapper {
   template <std::invocable<unsigned> Logger>
     requires(sizeof(Logger) <= kSmallBufferSize)
   void destroyLogger() {
-    if (logger_.head_ != nullptr) {
+    if (call_ptr_ != nullptr) {
       std::allocator_traits<Allocator>::destroy(
-          alloc_, reinterpret_cast<Logger*>(logger_.stack_));
+          alloc_,
+          reinterpret_cast<std::remove_reference_t<Logger>*>(logger_.stack_));
     }
     logger_.head_ = nullptr;
     call_ptr_ = nullptr;
