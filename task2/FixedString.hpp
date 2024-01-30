@@ -1,12 +1,22 @@
 #pragma once
 
+#include <string_view>
 
-template<size_t max_length>
+template <size_t max_length>
 struct FixedString {
-  FixedString(const char* string, size_t length);
-  operator std::string_view() const;
+  constexpr FixedString(const char string[], const size_t length)
+      : length(length) {
+    std::copy(string, string + length, this->string);
+  }
 
-  // std::string impl; ???
+  constexpr operator std::string_view() const {
+    return {string, length};
+  }
+
+  char string[max_length];
+  size_t length;
 };
 
-// operator ""_cstr ?
+constexpr FixedString<256> operator""_cstr(const char string[], size_t length) {
+  return {string, length};
+}
